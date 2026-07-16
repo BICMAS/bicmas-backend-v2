@@ -1,0 +1,532 @@
+import { prisma } from '../utils/db.js';
+import { getAssignmentCompletionState } from '../lib/courseCompletion.js';
+import { computeScorePercent } from '../utils/scormScore.js';
+
+/** Course has no orgId; scope assignments by learner or group in the org. */
+function assignmentWhereForOrg(orgId) {
+    return {
+        OR: [
+            { assigneeUser: { orgId } },
+            { group: { orgId } }
+        ]
+    };
+}
+
+export class DashboardModel {
+    static async getTotalLearners(orgId) {
+        try {
+            console.log('[DASHBOARD MODEL] getTotalLearners for orgId:', orgId);
+            return await prisma.user.count({
+                where: { orgId, userRole: 'LEARNER', status: 'ACTIVE' }
+            });
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getTotalLearners]', error.message);
+            return 0;
+        }
+    }
+
+    static async getAverageCompletion(orgId) {
+        try {
+            console.log('[DASHBOARD MODEL] getAverageCompletion for orgId:', orgId);
+            const avgResult = await prisma.attempt.aggregate({
+                where: { user: { orgId } },
+                _avg: { completionPercentage: true }
+            });
+            return avgResult._avg.completionPercentage || 0;
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getAverageCompletion]', error.message);
+            return 0;
+        }
+    }
+
+    static async getOverdueCourses(orgId) {
+        try {
+            console.log('[DASHBOARD MODEL] getOverdueCourses for orgId:', orgId);
+            return await prisma.assignment.count({
+                where: {
+                    AND: [
+                        assignmentWhereForOrg(orgId),
+                        { dueDate: { lt: new Date() } },
+                        { NOT: { attempts: { some: { status: 'COMPLETED' } } } }
+                    ]
+                }
+            });
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getOverdueCourses]', error.message);
+            return 0;
+        }
+    }
+
+    static async getActiveAssignments(orgId) {
+        try {
+            console.log('[DASHBOARD MODEL] getActiveAssignments for orgId:', orgId);
+            return await prisma.assignment.count({
+                where: {
+                    AND: [
+                        assignmentWhereForOrg(orgId),
+                        { dueDate: { gte: new Date() } },
+                        { NOT: { attempts: { some: { status: 'COMPLETED' } } } }
+                    ]
+                }
+            });
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getActiveAssignments]', error.message);
+            return 0;
+        }
+    }
+
+
+
+    static async getTopPerformers(orgId, limit = 5) {
+        try {
+            console.log('[DASHBOARD MODEL] getTopPerformers for orgId:', orgId);
+            const users = await prisma.user.findMany({
+                where: { orgId, userRole: 'LEARNER', status: 'ACTIVE' },
+                select: {
+                    id: true,
+                    fullName: true,
+                    email: true,
+                    department: true,
+                    points: true,
+                    scormAttempts: {
+                        select: {
+                            score: true,
+                            scormCloudScoreScaled: true,
+                            completionPercentage: true,
+                        },
+                    },
+                    userAttempts: {
+                        select: { completionPercentage: true },
+                        where: { status: 'COMPLETED' }
+                    }
+                }
+            });
+            const ranked = users
+                .map((u) => {
+                    const scorePercents = u.scormAttempts
+                        .map((attempt) => computeScorePercent(attempt.score, attempt.scormCloudScoreScaled))
+                        .filter((value) => value != null);
+                    const avgScore = scorePercents.length > 0
+                        ? Math.round(scorePercents.reduce((sum, value) => sum + value, 0) / scorePercents.length)
+                        : 0;
+                    const avgCompletion = Math.round(
+                        (u.userAttempts.reduce((sum, a) => sum + (a.completionPercentage || 0), 0) / Math.max(u.userAttempts.length, 1)) * 100
+                    ) / 100;
+
+                    return {
+                        id: u.id,
+                        fullName: u.fullName,
+                        email: u.email,
+                        department: u.department,
+                        points: u.points,
+                        avgScore,
+                        avgCompletion,
+                    };
+                })
+                .sort((a, b) => b.points - a.points)
+                .slice(0, limit);
+            return ranked;
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getTopPerformers]', error.message);
+            return [];
+        }
+    }
+
+    static async getCompletionByDepartment(orgId) {
+        try {
+            console.log('[DASHBOARD MODEL] getCompletionByDepartment for orgId:', orgId);
+            const users = await prisma.user.findMany({
+                where: { orgId, userRole: 'LEARNER', status: 'ACTIVE' },
+                select: {
+                    department: true,
+                    userAttempts: true
+                }
+            });
+            const grouped = users.reduce((acc, user) => {
+                const department = user.department ?? 'UNASSIGNED';
+                if (!acc[department]) acc[department] = [];
+                acc[department].push(user);
+                return acc;
+            }, {});
+
+            return Object.entries(grouped).map(([department, departmentUsers]) => {
+                const now = new Date();
+                return {
+                    department,
+                    totalLearners: departmentUsers.length,
+                    completed: departmentUsers.filter((u) => u.userAttempts.some((a) => a.status === 'COMPLETED')).length,
+                    inProgress: departmentUsers.filter((u) => u.userAttempts.some((a) => a.status === 'IN_PROGRESS')).length,
+                    notStarted: departmentUsers.filter((u) => u.userAttempts.length === 0).length,
+                    overdue: departmentUsers.filter((u) => u.userAttempts.some((a) => a.dueDate && a.dueDate < now && a.status !== 'COMPLETED')).length
+                };
+            });
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getCompletionByDepartment]', error.message);
+            return [];
+        }
+    }
+
+    static async getCourseStatus(orgId) {
+        try {
+            console.log('[DASHBOARD MODEL] getCourseStatus for orgId:', orgId);
+            const now = new Date();
+            const learners = await prisma.user.findMany({
+                where: { orgId, userRole: 'LEARNER', status: 'ACTIVE' },
+                select: {
+                    userAttempts: {
+                        select: {
+                            status: true,
+                            dueDate: true
+                        }
+                    }
+                }
+            });
+
+            const courseStatus = learners.reduce((acc, learner) => {
+                const attempts = learner.userAttempts || [];
+
+                if (attempts.length === 0) {
+                    acc.notStarted += 1;
+                    return acc;
+                }
+
+                const hasOverdue = attempts.some((a) => a.dueDate && a.dueDate < now && a.status !== 'COMPLETED');
+                if (hasOverdue) {
+                    acc.overdue += 1;
+                    return acc;
+                }
+
+                const hasInProgress = attempts.some((a) => a.status === 'IN_PROGRESS');
+                if (hasInProgress) {
+                    acc.inProgress += 1;
+                    return acc;
+                }
+
+                const hasCompleted = attempts.some((a) => a.status === 'COMPLETED');
+                if (hasCompleted) {
+                    acc.completed += 1;
+                    return acc;
+                }
+
+                // Fallback for statuses that are neither completed nor in-progress.
+                acc.notStarted += 1;
+                return acc;
+            }, { completed: 0, inProgress: 0, notStarted: 0, overdue: 0 });
+
+            return courseStatus;
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getCourseStatus]', error.message);
+            return { completed: 0, inProgress: 0, notStarted: 0, overdue: 0 };
+        }
+    }
+
+    static async getActiveLearners() {
+        return prisma.user.count({
+            where: { userRole: 'LEARNER', status: 'ACTIVE' }
+        });
+    }
+
+    static async getCompletionRate() {
+        const avgResult = await prisma.attempt.aggregate({
+            where: { status: 'COMPLETED' },
+            _avg: { completionPercentage: true }
+        });
+        return avgResult._avg.completionPercentage || 0;
+    }
+
+    static async getAverageSession() {
+        const avgResult = await prisma.attempt.aggregate({
+            where: { learningHours: { not: null, gt: 0 } },
+            _avg: { learningHours: true },
+        });
+        const avgHours = avgResult._avg.learningHours || 0;
+        return Math.round(avgHours * 60);
+    }
+
+    static async getSystemLoad() {
+        return prisma.attempt.count({
+            where: { status: 'IN_PROGRESS' }
+        });
+    }
+
+    static async getRecentActivities(limit = 10) {
+        console.log('[DASHBOARD MODEL] getRecentActivities');
+        return prisma.auditLog.findMany({
+            where: { eventType: { in: ['LOGIN', 'COURSE_START', 'COURSE_COMPLETE'] } },  // FIXED: Use eventType instead of actionType
+            orderBy: { createdAt: 'desc' },
+            take: limit,
+            include: { actor: { select: { id: true, fullName: true } } }
+        });
+    }
+
+    static async getLearningActivityGraph(days = 30) {
+        console.log('[DASHBOARD MODEL] getLearningActivityGraph');
+        try {
+            const startDate = new Date();
+            startDate.setDate(startDate.getDate() - days);
+            const dailyData = await prisma.$queryRaw`
+        SELECT DATE("createdAt") as date, COUNT(*) as newAttempts, SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completions
+        FROM "attempts"
+        WHERE "createdAt" >= ${startDate.toISOString()}
+        GROUP BY DATE("createdAt")
+        ORDER BY date
+      `;
+            return dailyData.map(row => ({
+                date: row.date,
+                newAttempts: Number(row.newattempts || 0),
+                completions: Number(row.completions || 0)
+            }));
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getLearningActivityGraph]', error.message);
+            return [];  // Fallback empty array
+        }
+    }
+
+    static async getRecentActivity(limit = 5) {
+        console.log('[DASHBOARD MODEL] getRecentActivity');
+        return prisma.auditLog.findMany({
+            orderBy: { createdAt: 'desc' },
+            take: limit,
+            include: { actor: { select: { fullName: true } } }  // FIXED: Remove target: true
+        });
+    }
+
+    static async getLearnerStreak(userId) {
+        const lastAttempts = await prisma.attempt.findMany({
+            where: { userId, status: 'COMPLETED' },
+            select: { createdAt: true },
+            orderBy: { createdAt: 'desc' },
+            take: 30  // Last 30 days max
+        });
+        let streak = 0;
+        const today = new Date();
+        for (const attempt of lastAttempts) {
+            const attemptDate = new Date(attempt.createdAt);
+            if (attemptDate.toDateString() === today.toDateString()) {
+                streak++;
+                break;
+            }
+            today.setDate(today.getDate() - 1);  // FIXED: Consecutive days
+            if (attemptDate.toDateString() === today.toDateString()) streak++;
+            else break;
+        }
+        return streak;
+    }
+
+    static async getLearnerPoints(userId) {
+        const user = await prisma.user.findUnique({ where: { id: userId }, select: { points: true } });
+        return user?.points || 0;
+    }
+
+    static async getLearnerHours(userId) {
+        const total = await prisma.attempt.aggregate({
+            where: { userId },
+            _sum: { learningHours: true }
+        });
+        return total._sum.learningHours || 0;
+    }
+
+    static async getCoursesDone(userId) {
+        const assignments = await prisma.assignment.findMany({
+            where: { assigneeUserId: userId },
+            select: { courseId: true },
+        });
+
+        let completedCount = 0;
+        for (const assignment of assignments) {
+            const state = await getAssignmentCompletionState(userId, assignment.courseId);
+            if (state.complete) completedCount += 1;
+        }
+
+        return completedCount;
+    }
+
+    static async getAverageScore(userId) {
+        const avgResult = await prisma.attempt.aggregate({
+            where: { userId, status: 'COMPLETED' },
+            _avg: { score: true }
+        });
+        return avgResult._avg.score || 0;
+    }
+
+    static async getLearnerPaths(userId) {
+        console.log('[DASHBOARD MODEL] getLearnerPaths for userId:', userId);
+        return prisma.learningPathEnrolment.findMany({
+            where: { userId },
+            include: {
+                learningPath: {
+                    select: {  // FIXED: Scalars + nested relation select
+                        id: true,
+                        title: true,
+                        description: true,
+                        enrolmentRule: true,
+                        curriculumSequence: true,
+                        status: true,
+                        creator: {  // FIXED: Nested select for relation (no include)
+                            select: { id: true, fullName: true }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    static async getLearningActivity(userId) {
+        const attempts = await prisma.attempt.findMany({
+            where: { userId, status: 'COMPLETED' },
+            select: { learningHours: true, createdAt: true },
+            take: 50  // Last 50 for 7 days
+        });
+        const activity = { Sun: 0, Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0 };
+        attempts.forEach(a => {
+            const day = new Date(a.createdAt).getDay();  // 0=Sun, 6=Sat
+            activity[Object.keys(activity)[day]] += a.learningHours || 0;
+        });
+        return activity;
+    }
+
+    static async getCurrentCourse(userId) {
+        console.log('[DASHBOARD MODEL] getCurrentCourse for userId:', userId);
+        try {
+            // 1. Find the most recent in-progress attempt for the user
+            const attempt = await prisma.attempt.findFirst({
+                where: { userId, status: 'IN_PROGRESS' },
+                orderBy: { updatedAt: 'desc' }, // most recent
+                include: { course: true, scormPackage: true }
+            });
+
+            if (!attempt) return null;
+
+            // 2. Try to find assignment only if courseId exists
+            let assignment = null;
+            if (attempt.courseId) {
+                assignment = await prisma.assignment.findFirst({
+                    where: {
+                        courseId: attempt.courseId,
+                        assigneeUserId: userId
+                    },
+                    include: { course: true }
+                });
+            }
+
+            // 3. Return combined result (prefer assignment if exists, fallback to attempt data)
+            return assignment || {
+                course: attempt.course,
+                attempt,
+                scormPackage: attempt.scormPackage || null
+            };
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getCurrentCourse]', error.message);
+            return null;
+        }
+    }
+
+    static async getQuizStats(userId) {
+        const quizAttempts = await prisma.quizAttempt.findMany({
+            where: { userId },
+            select: { percentage: true, passed: true, score: true }
+        });
+
+        const totalQuizzes = quizAttempts.length;
+        const passed = quizAttempts.filter(q => q.passed).length;
+        const avgQuizScore = totalQuizzes > 0
+            ? quizAttempts.reduce((sum, q) => sum + q.percentage, 0) / totalQuizzes
+            : 0;
+
+        return {
+            totalQuizzes,
+            passedQuizzes: passed,
+            failedQuizzes: totalQuizzes - passed,
+            averageQuizScore: Math.round(avgQuizScore * 100) / 100
+        };
+    }
+
+    static async getDailyLearningActivity(userId, days = 30) {
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+
+        const attempts = await prisma.attempt.findMany({
+            where: {
+                userId,
+                createdAt: { gte: startDate }
+            },
+            select: { createdAt: true, learningHours: true }
+        });
+
+        const activity = {};
+        for (let i = 0; i < days; i++) {
+            const date = new Date();
+            date.setDate(date.getDate() - i);
+            const dateStr = date.toISOString().split('T')[0];
+            activity[dateStr] = 0;
+        }
+
+        attempts.forEach(a => {
+            const dateStr = a.createdAt.toISOString().split('T')[0];
+            if (activity[dateStr] !== undefined) {
+                activity[dateStr] += a.learningHours || 0;
+            }
+        });
+
+        return activity;
+    }
+
+    static async getUnfinishedCourses(userId) {
+        console.log('[DASHBOARD MODEL] getUnfinishedCourses for userId:', userId);
+        try {
+            const assignments = await prisma.assignment.findMany({
+                where: { assigneeUserId: userId },
+                include: { course: true },
+            });
+
+            const unfinished = [];
+            for (const assignment of assignments) {
+                const state = await getAssignmentCompletionState(userId, assignment.courseId);
+                if (!state.complete) {
+                    unfinished.push(assignment);
+                }
+            }
+
+            return unfinished;
+        } catch (error) {
+            console.error('[DASHBOARD MODEL ERROR getUnfinishedCourses]', error.message);
+            return [];
+        }
+    }
+
+    // static async getCriticalAlerts(threshold = 50) {  // Courses with <50% completion
+    //     console.log('[DASHBOARD MODEL] getCriticalAlerts');
+    //     const courses = await prisma.course.findMany({
+    //         where: {
+    //             assignments: {
+    //                 some: {
+    //                     attempts: {
+    //                         none: { status: 'COMPLETED' }  // FIXED: Assignments with incomplete attempts
+    //                     }
+    //                 }
+    //             }
+    //         },
+    //         include: {
+    //             assignments: {
+    //                 include: {
+    //                     attempts: {
+    //                         select: { completionPercentage: true, status: true }
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     });
+    //     const alerts = courses.map(c => {
+    //         const allAttempts = c.assignments.flatMap(a => a.attempts);
+    //         const completedAttempts = allAttempts.filter(a => a.status === 'COMPLETED');
+    //         const avgCompletion = completedAttempts.length > 0 ? completedAttempts.reduce((sum, a) => sum + (a.completionPercentage || 0), 0) / completedAttempts.length : 0;
+    //         const failureRate = 100 - (avgCompletion * 100);
+    //         return {
+    //             id: c.id,
+    //             title: c.title,
+    //             failureRate: Math.round(failureRate * 100) / 100
+    //         };
+    //     }).filter(c => c.failureRate > threshold);
+    //     return alerts.sort((a, b) => b.failureRate - a.failureRate);
+    // }
+}

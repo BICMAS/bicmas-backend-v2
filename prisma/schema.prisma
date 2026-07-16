@@ -1,0 +1,605 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  //output   = "../src/prisma/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  HR_MANAGER
+  LEARNER
+}
+
+enum Department {
+  HR
+  ENGINEERING
+  SALES
+  MARKETING
+  FINANCE
+  OPERATIONS
+  IT
+  CUSTOMER_SUPPORT
+  LEGAL
+  ADMINISTRATION
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BLOCKED
+  DEACTIVATED
+}
+
+enum AuthProvider {
+  LOCAL
+  SSO
+}
+
+enum DeviceType {
+  PWA
+  MOBILE
+  DESKTOP
+}
+
+enum GroupRole {
+  MEMBER
+  OWNER
+}
+
+enum Visibility {
+  PUBLIC
+  INTERNAL
+}
+
+enum ScormVersion {
+  V1_2
+  V2004
+}
+
+enum AttemptStatus {
+  INCOMPLETE
+  COMPLETED
+  PASSED
+  FAILED
+  NOT_STARTED
+  IN_PROGRESS
+}
+
+enum LearnerModuleProgressStatus {
+  LOCKED
+  UNLOCKED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id                          String                  @id @default(cuid()) @db.VarChar(25)
+  username                    String?                 @unique
+  email                       String                  @unique
+  fullName                    String
+  password                    String                  @db.VarChar(255)
+  timezone                    String                  @default("UTC")
+  status                      UserStatus              @default(ACTIVE)
+  authProvider                AuthProvider            @default(LOCAL)
+  userRole                    UserRole                @default(LEARNER)
+  department                  Department?
+  phoneNumber                 String?                 @unique
+  metadata                    Json?
+  createdAt                   DateTime                @default(now())
+  updatedAt                   DateTime                @updatedAt
+  orgId                       String?                 @db.VarChar(25)
+  groupId                     String?                 @db.VarChar(25)
+  organization                Organization?           @relation("UserInOrg", fields: [orgId], references: [id])
+  createdOrgs                 Organization[]          @relation("CreatedBy")
+  learningPathsCreated        LearningPath[]          @relation("LearningPathsCreated")
+  learningPathEnrolments      LearningPathEnrolment[]
+  devices                     Device[]
+  webPushSubscriptions        WebPushSubscription[]
+  streak                      Int                     @default(0)
+  groupMembers                GroupMember[]
+  coursesCreated              Course[]                @relation("CreatedBy")
+  assignmentsAssigner         Assignment[]            @relation("Assigner")
+  assignmentsLearner          Assignment[]            @relation("LearnerAssignments") // FIXED: Matching name
+  userAttempts                Attempt[]               @relation("UserAttempts") // FIXED: Matching name
+  certificates                Certificate[]
+  auditLogsActor              AuditLog[]              @relation("Actor")
+  scormPackages               ScormPackage[]
+  certificateTemplatesCreated CertificateTemplate[]   @relation("CertificateTemplatesCreated")
+  points                      Int                     @default(0)
+  scormAttempts               ScormAttempt[]
+  quizAttempts                QuizAttempt[]
+  fieldTasks                  FieldTask[]
+  announcements               Announcement[]
+  coinAwards                  CoinAward[]
+  learnerModuleProgress       LearnerModuleProgress[]
+
+  @@map("users")
+}
+
+model Organization {
+  id        String    @id @default(cuid()) @db.VarChar(25)
+  name      String
+  metadata  Json?
+  createdBy String    @db.VarChar(25)
+  createdAt DateTime  @default(now())
+  status    OrgStatus @default(ACTIVE)
+  users     User[]    @relation("UserInOrg")
+  creator   User      @relation("CreatedBy", fields: [createdBy], references: [id])
+
+  @@map("organizations")
+}
+
+enum OrgStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Device {
+  id           String     @id @default(cuid()) @db.VarChar(25)
+  userId       String     @db.VarChar(25)
+  deviceType   DeviceType
+  deviceToken  String
+  lastSyncAt   DateTime?
+  registeredAt DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceToken])
+  @@map("devices")
+}
+
+/// Browser PushManager.subscribe() payload — same VAPID keys must be used when sending via web-push
+model WebPushSubscription {
+  id        String   @id @default(cuid()) @db.VarChar(25)
+  userId    String   @db.VarChar(25)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("web_push_subscriptions")
+}
+
+model Group {
+  id       String  @id @default(cuid()) @db.VarChar(25)
+  orgId    String? @db.VarChar(25)
+  name     String
+  metadata Json?
+
+  members     GroupMember[]
+  assignments Assignment[]
+
+  @@map("groups")
+}
+
+model GroupMember {
+  id      String    @id @default(cuid()) @db.VarChar(25)
+  groupId String    @db.VarChar(25)
+  userId  String    @db.VarChar(25)
+  role    GroupRole @default(MEMBER)
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@map("group_members")
+}
+
+// Courses: Main learning content
+enum CourseStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model Course {
+  id                 String        @id @default(cuid()) @db.VarChar(25)
+  title              String // Required
+  description        String? // Optional
+  tags               Json? // Optional array, e.g., ["beginner"]
+  visibility         Visibility? // Optional (null = Internal)
+  version            String? // Optional (null = "1.0")
+  status             CourseStatus  @default(DRAFT)
+  durationEstimate   Int?
+  scormPackageId     String?       @db.VarChar(25)
+  createdBy          String        @db.VarChar(25)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  scormCloudCourseId String?       @unique
+  modules            Module[]      @relation("CourseModules") // Named for nested
+  scormPackage       ScormPackage? @relation(fields: [scormPackageId], references: [id])
+  creator            User          @relation("CreatedBy", fields: [createdBy], references: [id])
+  assignments        Assignment[]  @relation("CourseAssignments") // FIXED: Named for matching
+  attempts           Attempt[]
+  certificates       Certificate[]
+  quizzes            Quiz[]
+  imageUrl           String?
+  passingScore         Float?        @default(70)
+  requireQuizPass      Boolean       @default(true)
+  modulePacingEnabled  Boolean       @default(false)
+  modulePacingDays     Int           @default(7)
+  pacingStartDate      DateTime?
+
+  learnerModuleProgress LearnerModuleProgress[]
+
+  @@map("courses")
+}
+
+model Module {
+  id              String   @id @default(cuid()) @db.VarChar(25)
+  name            String // Required
+  courseId        String   @db.VarChar(25)
+  sortOrder       Int      @default(0)
+  scormActivityId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  course          Course                  @relation("CourseModules", fields: [courseId], references: [id], onDelete: Cascade) // FIXED: Matching name
+  lessons         Lesson[]                @relation("ModuleLessons") // Named for nested lessons
+  learnerProgress LearnerModuleProgress[]
+
+  @@index([courseId]) // Perf
+  @@map("modules")
+}
+
+model LearnerModuleProgress {
+  id                   String                      @id @default(cuid()) @db.VarChar(25)
+  userId               String                      @db.VarChar(25)
+  courseId             String                      @db.VarChar(25)
+  moduleId             String                      @db.VarChar(25)
+  scormActivityId      String?
+  status               LearnerModuleProgressStatus @default(LOCKED)
+  unlockedAt           DateTime?
+  completedAt          DateTime?
+  scorePercent         Float?
+  completionPercentage Float?                      @default(0)
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  module Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, moduleId])
+  @@index([userId, courseId])
+  @@map("learner_module_progress")
+}
+
+model Lesson {
+  id                 String        @id @default(cuid()) @db.VarChar(25)
+  title              String // Required
+  description        String? // Optional
+  scormPackageId     String?       @db.VarChar(25) // Optional SCORM
+  moduleId           String        @db.VarChar(25)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  module             Module        @relation("ModuleLessons", fields: [moduleId], references: [id], onDelete: Cascade) // FIXED: Matching name
+  scormPackage       ScormPackage? @relation(fields: [scormPackageId], references: [id])
+  scormCloudCourseId String?       @unique
+
+  @@index([moduleId]) // Perf
+  @@map("lessons")
+}
+
+model ScormPackage {
+  id            String         @id @default(cuid()) @db.VarChar(25)
+  filename      String
+  storagePath   String
+  manifestJson  Json
+  scormVersion  ScormVersion
+  encrypted     Boolean        @default(false)
+  checksum      String
+  scormCloudId  String?        @unique
+  launchFile    String?
+  uploadedBy    String         @db.VarChar(25)
+  uploadedAt    DateTime       @default(now())
+  blobs         String[]
+  fileCount     Int
+  packageSize   Int
+  courses       Course[]
+  lessons       Lesson[]
+  attempts      Attempt[]
+  uploader      User?          @relation(fields: [uploadedBy], references: [id])
+  scormAttempts ScormAttempt[]
+
+  @@map("scorm_packages")
+}
+
+// Assignments: Task assignments to users/groups
+model Assignment {
+  id              String    @id @default(cuid()) @db.VarChar(25)
+  courseId        String    @db.VarChar(25)
+  assignerId      String    @db.VarChar(25)
+  assigneeUserId  String?   @db.VarChar(25)
+  assigneeGroupId String?   @db.VarChar(25)
+  dueDate         DateTime?
+  recurrenceRule  String?
+  createdAt       DateTime  @default(now())
+
+  course       Course    @relation("CourseAssignments", fields: [courseId], references: [id], onDelete: Cascade)
+  assigner     User      @relation("Assigner", fields: [assignerId], references: [id])
+  assigneeUser User?     @relation("LearnerAssignments", fields: [assigneeUserId], references: [id])
+  group        Group?    @relation(fields: [groupId], references: [id])
+  groupId      String?   @db.VarChar(25)
+  attempts     Attempt[] @relation("AssignmentAttempts")
+
+  @@unique([courseId, assigneeUserId])
+  @@unique([courseId, assigneeGroupId]) // FIXED: Unique for groups too
+  @@index([courseId]) // FIXED: Perf
+  @@index([assignerId])
+  @@map("assignments")
+}
+
+model Attempt {
+  id                       String         @id @default(cuid()) @db.VarChar(25)
+  userId                   String         @db.VarChar(25)
+  courseId                 String?        @db.VarChar(25)
+  status                   AttemptStatus  @default(NOT_STARTED)
+  completionPercentage     Float?         @default(0)
+  dueDate                  DateTime?
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+  assignmentId             String?        @db.VarChar(25)
+  assignment               Assignment?    @relation("AssignmentAttempts", fields: [assignmentId], references: [id], onDelete: SetNull)
+  user                     User           @relation("UserAttempts", fields: [userId], references: [id], onDelete: Cascade)
+  course                   Course?        @relation(fields: [courseId], references: [id], onDelete: SetNull) // ← nullable relation
+  learningHours            Float?
+  score                    Float?
+  scormPackage             ScormPackage?  @relation(fields: [scormPackageId], references: [id])
+  scormPackageId           String?        @db.VarChar(25)
+  interactions             Interaction[]
+  suspendDatum             SuspendDatum?
+  scormCloudRegistrationId String?        @unique
+  scormCloudLastSyncAt     DateTime?
+  scormCloudCompletion     Float?
+  scormCloudScoreScaled    Float?
+  scormCloudDuration       String?
+  scormAttempts            ScormAttempt[]
+
+  @@unique([userId, courseId])
+  @@unique([userId, scormPackageId])
+  @@index([userId])
+  @@index([courseId])
+  @@index([scormPackageId])
+  @@map("attempts")
+}
+
+model ScormAttempt {
+  id                       String        @id @default(cuid()) @db.VarChar(25)
+  userId                   String        @db.VarChar(25)
+  scormPackageId           String        @db.VarChar(25)
+  attemptId                String?       @db.VarChar(25) // optional link to course-level Attempt
+  scormCloudRegistrationId String        @unique
+  status                   AttemptStatus @default(IN_PROGRESS)
+  completionPercentage     Float?        @default(0)
+  score                    Float?
+  learningHours            Float?
+  scormCloudLastSyncAt     DateTime?
+  scormCloudCompletion     Float?
+  scormCloudScoreScaled    Float?
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scormPackage ScormPackage @relation(fields: [scormPackageId], references: [id], onDelete: Cascade)
+  attempt      Attempt?     @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, scormPackageId])
+  @@index([userId])
+  @@index([scormPackageId])
+  @@index([attemptId])
+  @@map("scorm_attempts")
+}
+
+// Interactions: SCORM interactions (consider separate table per type if volume high; here as flat for simplicity)
+model Interaction {
+  id               String   @id @default(cuid()) @db.VarChar(25)
+  attemptId        String   @db.VarChar(25)
+  interactionIndex Int
+  interactionType  String
+  correctResponse  Json?
+  learnerResponse  Json?
+  timestamp        DateTime
+
+  attempt Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, interactionIndex])
+  @@map("interactions")
+}
+
+// SuspendData: SCORM suspend data (1:1 per attempt; Json for blob)
+model SuspendDatum {
+  id          String @id @default(cuid()) @db.VarChar(25)
+  attemptId   String @unique @db.VarChar(25)
+  suspendBlob Json // Compressed/serialized state
+
+  attempt Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@map("suspend_data")
+}
+
+// Certificates: Issued certs
+model Certificate {
+  id               String   @id @default(cuid()) @db.VarChar(25)
+  userId           String   @db.VarChar(25)
+  courseId         String   @db.VarChar(25)
+  templateId       String? // FK to templates if separate
+  issuedAt         DateTime @default(now())
+  pdfPath          String // S3 path
+  verificationHash String
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId]) // One per user/course
+  @@map("certificates")
+}
+
+model CertificateTemplate {
+  id          String   @id @default(cuid()) @db.VarChar(25)
+  filename    String
+  blobUrl     String
+  mimeType    String?
+  description String?
+  createdBy   String   @db.VarChar(25)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  creator User @relation("CertificateTemplatesCreated", fields: [createdBy], references: [id])
+
+  @@map("certificate_templates")
+}
+
+// AuditLogs: Event logging
+model AuditLog {
+  id         String   @id @default(cuid()) @db.VarChar(25)
+  eventType  String
+  actorId    String   @db.VarChar(25)
+  targetType String
+  targetId   String   @db.VarChar(25)
+  payload    Json?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation("Actor", fields: [actorId], references: [id])
+
+  @@index([eventType, createdAt])
+  @@map("audit_logs")
+}
+
+model Quiz {
+  id           String        @id @default(cuid())
+  title        String
+  courseId     String
+  course       Course        @relation(fields: [courseId], references: [id])
+  questions    Json[] // or separate Question model
+  passingScore Float?        @default(70)
+  attempts     QuizAttempt[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model QuizAttempt {
+  id            String    @id @default(cuid())
+  userId        String
+  quizId        String
+  quiz          Quiz      @relation(fields: [quizId], references: [id])
+  score         Float // raw score
+  percentage    Float // 0-100
+  passed        Boolean   @default(false)
+  attemptsCount Int       @default(1)
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model LearningPath {
+  id                 String             @id @default(cuid()) @db.VarChar(25)
+  title              String // Required
+  description        String?
+  department         String?
+  enrolmentRule      String?
+  curriculumSequence Json
+  status             LearningPathStatus @default(PUBLISHED)
+  createdBy          String             @db.VarChar(25)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  creator    User                    @relation("LearningPathsCreated", fields: [createdBy], references: [id])
+  enrolments LearningPathEnrolment[]
+
+  @@map("learning_paths")
+}
+
+model LearningPathEnrolment {
+  id             String    @id @default(cuid()) @db.VarChar(25)
+  learningPathId String    @db.VarChar(25)
+  userId         String    @db.VarChar(25)
+  enrolledAt     DateTime  @default(now())
+  completedAt    DateTime?
+  progress       Float?    @default(0) // 0-100%
+
+  learningPath LearningPath @relation(fields: [learningPathId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([learningPathId, userId])
+  @@map("learning_path_enrolments")
+}
+
+enum LearningPathStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model EconomyConfig {
+  id                 String   @id @default("default")
+  courseCompletion   Int      @default(50)
+  moduleCompletion   Int      @default(10)
+  perfectQuiz        Int      @default(25)
+  dailyStreak        Int      @default(5)
+  streakDaysRequired Int      @default(7)
+  enableLeaderboard  Boolean  @default(true)
+  updatedAt          DateTime @updatedAt
+  updatedBy          String?  @db.VarChar(25)
+
+  @@map("economy_config")
+}
+
+model CoinAward {
+  id          String   @id @default(cuid()) @db.VarChar(25)
+  userId      String   @db.VarChar(25)
+  awardType   String   @db.VarChar(50)
+  referenceId String   @db.VarChar(100)
+  points      Int
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, awardType, referenceId])
+  @@index([userId, createdAt])
+  @@map("coin_awards")
+}
+
+model FieldTask {
+  id          String   @id @default(cuid())
+  moduleTitle String? // ← New field: user-typed module title
+  description String
+  mediaUrl    String? // Vercel Blob URL
+  mediaType   String? // "image", "video"
+  createdBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([createdBy])
+  @@index([createdAt])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  text      String
+  createdBy String // userId of admin/HR who posted it
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([createdBy])
+}

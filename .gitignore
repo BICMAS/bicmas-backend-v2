@@ -1,0 +1,10 @@
+node_modules
+# Keep environment variables out of version control
+.env
+.env-backup
+
+/src/generated/prisma
+uploads/
+uploads/temp/
+*.zip
+# Any other temp/large files

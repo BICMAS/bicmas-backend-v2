@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "courses" ADD COLUMN "passingScore" DOUBLE PRECISION DEFAULT 70;
+ALTER TABLE "courses" ADD COLUMN "requireQuizPass" BOOLEAN NOT NULL DEFAULT true;
