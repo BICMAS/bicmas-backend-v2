@@ -1,4 +1,6 @@
 import { prisma } from '../utils/db.js';
+import { PushService } from '../service/PushService.js';
+import { OneSignalService } from '../service/OneSignalService.js';
 
 // Post a new announcement (admin/HR only)
 export const createAnnouncement = async (req, res) => {
@@ -30,20 +32,51 @@ export const createAnnouncement = async (req, res) => {
             });
         }
 
+        const trimmed = text.trim();
         const announcement = await prisma.announcement.create({
             data: {
-                text: text.trim(),
+                text: trimmed,
                 createdBy: userId
             },
             select: {
                 id: true,
                 text: true,
                 createdAt: true,
-                user: {                           // ← FIXED: user, not createdByUser
+                user: {
                     select: { fullName: true, userRole: true }
                 }
             }
         });
+
+        // Fire-and-forget: Web Push (browser/PWA) + OneSignal (mobile).
+        const preview =
+            trimmed.length > 140 ? `${trimmed.slice(0, 137)}...` : trimmed;
+        const pushPayload = {
+            title: 'BICMAS LEARN Announcement',
+            body: preview,
+            url: '/',
+            announcementId: announcement.id
+        };
+
+        if (PushService.isConfigured()) {
+            void PushService.sendToOrganization(userOrgId, pushPayload)
+                .then((results) => {
+                    console.log('[ANNOUNCEMENT WEB PUSH]', results);
+                })
+                .catch((err) => {
+                    console.error('[ANNOUNCEMENT WEB PUSH ERROR]', err);
+                });
+        }
+
+        if (OneSignalService.isConfigured()) {
+            void OneSignalService.sendToOrganization(userOrgId, pushPayload)
+                .then((results) => {
+                    console.log('[ANNOUNCEMENT ONESIGNAL]', results);
+                })
+                .catch((err) => {
+                    console.error('[ANNOUNCEMENT ONESIGNAL ERROR]', err);
+                });
+        }
 
         res.status(201).json({
             success: true,

@@ -13,6 +13,7 @@
     "seed": "node src/prisma/seed.js",
     "test": "node scripts/smoke-test.js",
     "test:smoke": "node scripts/smoke-test.js",
+    "vapid:generate": "npx web-push generate-vapid-keys",
     "backfill:attempts:dry": "node src/scripts/backfillAttemptsFromScorm.js",
     "backfill:attempts:apply": "node src/scripts/backfillAttemptsFromScorm.js --apply"
   },
