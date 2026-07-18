@@ -76,6 +76,10 @@ export const createAnnouncement = async (req, res) => {
                 .catch((err) => {
                     console.error('[ANNOUNCEMENT ONESIGNAL ERROR]', err);
                 });
+        } else {
+            console.warn(
+                '[ANNOUNCEMENT ONESIGNAL] skipped — ONESIGNAL_APP_ID / ONESIGNAL_REST_API_KEY not set on this deployment'
+            );
         }
 
         res.status(201).json({

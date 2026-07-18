@@ -69,13 +69,39 @@ export class OneSignalService {
                     })
                 });
 
-                if (!res.ok) {
-                    const errText = await res.text().catch(() => '');
-                    console.error('[ONESIGNAL]', res.status, errText);
-                    failed += chunk.length;
-                } else {
-                    sent += chunk.length;
+                const bodyText = await res.text().catch(() => '');
+                let parsed = null;
+                try {
+                    parsed = bodyText ? JSON.parse(bodyText) : null;
+                } catch {
+                    parsed = null;
                 }
+
+                if (!res.ok) {
+                    console.error('[ONESIGNAL]', res.status, bodyText);
+                    failed += chunk.length;
+                    continue;
+                }
+
+                const recipients =
+                    typeof parsed?.recipients === 'number' ? parsed.recipients : null;
+                if (recipients === 0) {
+                    console.warn(
+                        '[ONESIGNAL] API accepted request but recipients=0. ' +
+                            'No subscriptions matched these External IDs. ' +
+                            'Confirm the Android app called OneSignal.login(backendUserId) ' +
+                            'and that user appears with that External ID in OneSignal Audience.',
+                        { notificationId: parsed?.id, externalIdCount: chunk.length }
+                    );
+                } else {
+                    console.log('[ONESIGNAL] delivered', {
+                        notificationId: parsed?.id,
+                        recipients,
+                        externalIdCount: chunk.length
+                    });
+                }
+                // Count API-accepted chunks; recipients may still be 0 if External IDs missing.
+                sent += chunk.length;
             } catch (err) {
                 console.error('[ONESIGNAL] request failed', err);
                 failed += chunk.length;
@@ -90,15 +116,24 @@ export class OneSignalService {
      */
     static async sendToOrganization(orgId, payload) {
         if (!OneSignalService.isConfigured()) {
+            console.warn(
+                '[ONESIGNAL] skipped — set ONESIGNAL_APP_ID and ONESIGNAL_REST_API_KEY on this server'
+            );
             return { sent: 0, failed: 0, skipped: true };
         }
         if (!orgId) {
+            console.warn('[ONESIGNAL] skipped — missing orgId');
             return { sent: 0, failed: 0, skipped: true };
         }
 
         const users = await prisma.user.findMany({
             where: { orgId },
             select: { id: true }
+        });
+
+        console.log('[ONESIGNAL] targeting org users', {
+            orgId,
+            userCount: users.length
         });
 
         return OneSignalService.sendToExternalIds(
