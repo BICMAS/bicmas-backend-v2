@@ -227,7 +227,7 @@ export class CertificatePdfService {
 
         const headerColor =
             themeConfig.theme === 'tech' ? rgb(1, 1, 1) : styles.muted;
-        drawCenteredText(page, 'Prime Impact', contentTop, 11, bodyFont, headerColor);
+        drawCenteredText(page, 'BICMAS LEARN', contentTop, 11, bodyFont, headerColor);
         drawCenteredText(
             page,
             themeConfig.title || DEFAULT_THEME_CONFIG.title,
@@ -237,55 +237,64 @@ export class CertificatePdfService {
             themeConfig.theme === 'tech' ? rgb(1, 1, 1) : styles.primary,
         );
 
-        drawCenteredText(page, 'This certifies that', height * 0.46, styles.bodySize, bodyFont, styles.muted);
-        drawCenteredText(page, traineeName, height * 0.38, styles.nameSize, titleFont, styles.primary);
+        // Keep body copy in the upper/mid page so the footer never collides.
+        drawCenteredText(page, 'This certifies that', height * 0.50, styles.bodySize, bodyFont, styles.muted);
+        drawCenteredText(page, traineeName, height * 0.42, styles.nameSize, titleFont, styles.primary);
         drawCenteredText(
             page,
             'has successfully completed the course requirements for',
-            height * 0.30,
+            height * 0.34,
             styles.bodySize,
             bodyFont,
             styles.muted,
         );
-        drawCenteredText(page, courseTitle, height * 0.24, styles.bodySize + 2, titleFont, styles.primary);
+        drawCenteredText(page, courseTitle, height * 0.28, styles.bodySize + 2, titleFont, styles.primary);
+
+        // Footer stack (bottom → top): role, line, signatory name, then issued date above.
+        // Previous layout placed "Issued on" at ~height*0.18 (~107) on top of the signature (~96–114).
+        const footerBaseY = 52;
+        let cursorY = footerBaseY;
+
+        if (themeConfig.signatoryRole) {
+            drawCenteredText(
+                page,
+                themeConfig.signatoryRole,
+                cursorY,
+                10,
+                bodyFont,
+                styles.muted,
+            );
+            cursorY += 16;
+        }
+
+        if (themeConfig.signatory) {
+            page.drawLine({
+                start: { x: width / 2 - 90, y: cursorY + 4 },
+                end: { x: width / 2 + 90, y: cursorY + 4 },
+                thickness: 1,
+                color: styles.muted,
+            });
+            cursorY += 14;
+            drawCenteredText(
+                page,
+                themeConfig.signatory,
+                cursorY,
+                16,
+                signatoryFont,
+                styles.primary,
+            );
+            cursorY += 28;
+        }
 
         if (themeConfig.showDate !== false) {
             drawCenteredText(
                 page,
                 `Issued on ${formatIssueDate(issuedAt)}`,
-                height * 0.18,
+                cursorY,
                 13,
                 bodyFont,
                 styles.muted,
             );
-        }
-
-        if (themeConfig.signatory) {
-            const signatoryY = 96;
-            drawCenteredText(
-                page,
-                themeConfig.signatory,
-                signatoryY + 18,
-                16,
-                signatoryFont,
-                styles.primary,
-            );
-            page.drawLine({
-                start: { x: width / 2 - 90, y: signatoryY + 8 },
-                end: { x: width / 2 + 90, y: signatoryY + 8 },
-                thickness: 1,
-                color: styles.muted,
-            });
-            if (themeConfig.signatoryRole) {
-                drawCenteredText(
-                    page,
-                    themeConfig.signatoryRole,
-                    signatoryY - 8,
-                    10,
-                    bodyFont,
-                    styles.muted,
-                );
-            }
         }
 
         const generatedBytes = await pdfDoc.save();
